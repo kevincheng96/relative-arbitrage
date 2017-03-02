@@ -8,13 +8,10 @@ import scipy.odr as odr
 import pandas_datareader.data as web
 import matplotlib.pyplot as plt # matplotlib is version 1.3.1, need to update to 1.4 or higher...
 
-# print nvda.head()
-# print np.array(nvda[['Adj Close', 'Open']])
-# print pd.DataFrame(np.array(nvda[['Adj Close', 'Open']]))
-# print nvda.describe()
+# Good stock pairs:
+# HD and LOW
 
-# nvda['Adj Close'].plot()
-# plt.show()
+
 stock1 = 'HD'
 stock2 = 'LOW'
 days_moving_avg = 20
@@ -28,8 +25,8 @@ def statisticalArb(stock1, stock2, start, end, days_moving_avg):
 	hedge_ratio = calculateHedgeRatio(df, days_moving_avg)
 	print "Hedge Ratio Used: " + str(hedge_ratio)
 	df = calculateSpread(df, stock1, stock2, days_moving_avg, hedge_ratio)
-	# print df
-	# print df[[stock1,stock2]].corr()
+	# # print df
+	print 'correlation', df[[stock1,stock2]].corr()
 	graph(df)
 
 # retrieving and sanitizing data
@@ -48,17 +45,25 @@ def getStocks(stock1, stock2, start, end, days_moving_avg):
 # spread - p1 = -b * p2 + b1
 # run augmented Dickey-Fuller (ADF) test to see if spreads are stationary
 def calculateHedgeRatio(df, days_moving_avg):
-	s1list = df[stock1].tolist()[-days_moving_avg:]
-	s2list = df[stock2].tolist()[-days_moving_avg:]
+	y = np.asarray(df[stock1].tolist()[-days_moving_avg:]) # stock 1 data
+	x = np.asarray(df[stock2].tolist()[-days_moving_avg:]) # stock 2 data
+	# Fit the data using scipy.odr
 	def f(B, x):
 		return B[0] * x + B[1]
-	print len(s1list)
-	print np.std(s1list)
-	print np.std(s2list)
 	linear = odr.Model(f)
-	mydata = odr.RealData(s1list, s2list, sx=np.std(s1list), sy=np.std(s2list))
+	mydata = odr.RealData(x, y, sx=np.std(y), sy=np.std(x))
 	myodr = odr.ODR(mydata, linear, beta0=[2, 0])
 	myoutput = myodr.run()
+	# fit the data using numpy.polyfit
+	fit_np = np.polyfit(x, y, 1)
+	# graph to compare the fit
+	print 'polyfit', fit_np
+	print 'odr', myoutput.beta
+	plt.plot(x, y, label='Actual Data', linestyle='dotted') # am i plotting the right things???
+	plt.plot(x, np.polyval(fit_np, x), "r--", lw = 2, label='Polyfit')
+	plt.plot(x, f(myoutput.beta, x), "g--", lw = 2, label='Least Errors')
+	plt.legend(loc='lower right')
+	plt.show()
 	# myoutput.pprint()
 	return myoutput.beta[0] # returns the hedge ratio
 
