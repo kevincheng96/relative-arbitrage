@@ -1,4 +1,5 @@
-# Beta-neutral Statistical Arbitrage / Divergence
+# Beta-neutral Statistical Arbitrage / Pair Trading
+# Calculating spread using Moving Average and Rolling Standard Deviation
 
 import pandas as pd
 from pandas import DataFrame
@@ -6,27 +7,50 @@ from datetime import datetime
 import numpy as np
 import scipy.odr as odr
 import pandas_datareader.data as web
+import statsmodels
+import statsmodels.tsa.stattools as tsa # test for cointegration between stocks (do the)
 import matplotlib.pyplot as plt # matplotlib is version 1.3.1, need to update to 1.4 or higher...
+from pandas.stats.api import ols
+import arbstrategy # importing the arbitrage strategy I wrote in another file
 
-# Good stock pairs:
+# Good stock pairs (ranked):
 # HD and LOW
+# AREX and WLL
+# MCD and SBUX
 
-
-stock1 = 'HD'
-stock2 = 'LOW'
+stock1 = 'AREX'
+stock2 = 'WLL'
 days_moving_avg = 20
 start = datetime(2016, 10, 1)
 end = datetime(2017, 3, 1)
+cash = 1000
 # need to dynamically calculate hedge ratio based on historical data
 # hedge_ratio = 0.67153805 # ratio of stock2 to stock1
 
-def statisticalArb(stock1, stock2, start, end, days_moving_avg):
+############
+## To Do: ##
+############
+# Implement arbStrategy.run()
+# Calculate hedge-ratio for each day (ratio dynamically changes)
+# Implement findCointegratedStocks()
+# Find endpoints for cryptocurrency historical data
+
+
+# given a list of stocks, find the cointegrated pairs
+def findCointegratedStocks(tickers, start, end, days_moving_avg):
+	for i in range(len(tickers) - 1):
+		for j in range(i+1, len(tickers)):
+			df = getStocks(tickers[i], tickers[j], start, end, days_moving_avg)
+			df = calculateSpread(df, tickers[i], tickers[j], days_moving_avg, hedge_ratio)
+			getStatistics(df)
+
+def statisticalArb(cash, stock1, stock2, start, end, days_moving_avg):
 	df = getStocks(stock1, stock2, start, end, days_moving_avg)
 	hedge_ratio = calculateHedgeRatio(df, days_moving_avg)
 	print "Hedge Ratio Used: " + str(hedge_ratio)
 	df = calculateSpread(df, stock1, stock2, days_moving_avg, hedge_ratio)
+	getStatistics(df)
 	# # print df
-	print 'correlation', df[[stock1,stock2]].corr()
 	graph(df)
 
 # retrieving and sanitizing data
@@ -57,37 +81,43 @@ def calculateHedgeRatio(df, days_moving_avg):
 	# fit the data using numpy.polyfit
 	fit_np = np.polyfit(x, y, 1)
 	# graph to compare the fit
-	print 'polyfit', fit_np
-	print 'odr', myoutput.beta
+	print 'polyfit beta', fit_np[0]
+	print 'least errors beta', myoutput.beta[0]
 	plt.plot(x, y, label='Actual Data', linestyle='dotted') # am i plotting the right things???
 	plt.plot(x, np.polyval(fit_np, x), "r--", lw = 2, label='Polyfit')
 	plt.plot(x, f(myoutput.beta, x), "g--", lw = 2, label='Least Errors')
 	plt.legend(loc='lower right')
 	plt.show()
 	# myoutput.pprint()
+	# df["HedgeRatio"] = calculateHedgeRatio(df[])
 	return myoutput.beta[0] # returns the hedge ratio
 
 def calculateSpread(df, stock1, stock2, days_moving_avg, hedge_ratio):
 	df['Spread'] = df[stock1] - df[stock2] * hedge_ratio
 	df['MovingAvg'] = df['Spread'].rolling(window=days_moving_avg).mean()
 	df['Stdev'] = df['Spread'].rolling(window=days_moving_avg).std()
-	df['UpperStdev'] = df['MovingAvg'] + 2 * df['Stdev']
-	df['LowerStdev'] = df['MovingAvg'] - 2 * df['Stdev']
+	df['UpperTrigger'] = df['MovingAvg'] + 2 * df['Stdev']
+	df['LowerTrigger'] = df['MovingAvg'] - 2 * df['Stdev']
 	return df
 
 # now want to find the spread and the past 60 day standard deviation for spreads
 def graph(df):
 	df['Spread'].plot(label='Spread', color='g')
 	df['MovingAvg'].plot(label='MovingAvg', color='b')
-	df['UpperStdev'].plot(label='UpperStdev', color='r', linestyle='dashed')
-	df['LowerStdev'].plot(label='LowerStdev', color='r', linestyle='dashed')
+	df['UpperTrigger'].plot(label='UpperTrigger', color='r', linestyle='dashed')
+	df['LowerTrigger'].plot(label='LowerTrigger', color='r', linestyle='dashed')
 	plt.legend(loc='lower right')
 	plt.show()
 
-def calculateProfit(df):
-	return
+# prints correlations, cointegrations test results, etc.
+def getStatistics(df):
+	print 'Correlation Table\n', df[[stock1,stock2]].corr()
+	coint_tstat, coint_pvalue, _ = tsa.coint(df[stock1], df[stock2])
+	print 'Cointegration P-value', coint_pvalue
+	cadf_pvalue = tsa.adfuller(df["Spread"])[1]
+	print 'Augmented Dickey-Fuller P-value', cadf_pvalue
 
-statisticalArb(stock1, stock2, start, end, days_moving_avg)
+statisticalArb(cash, stock1, stock2, start, end, days_moving_avg)
 
 # HOW TO READ THE CHART:
 # when spread crosses higher trigger level, sell stock1 and buy stock2.
@@ -101,3 +131,7 @@ statisticalArb(stock1, stock2, start, end, days_moving_avg)
 # Sources
 # Total Least Squares for Hedge Ratio: http://quantdevel.com/public/betterHedgeRatios.pdf
 # Intro to Statistical Arbitrage: https://www.youtube.com/watch?v=LLgV2Dse2Tc
+# CADF Cointegrated Testing: https://www.quantstart.com/articles/Basics-of-Statistical-Mean-Reversion-Testing-Part-II
+
+# Possible Useful Sources:
+# https://www.quantopian.com/posts/how-to-build-a-pairs-trading-strategy-on-quantopian
