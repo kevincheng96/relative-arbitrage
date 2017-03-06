@@ -24,6 +24,7 @@ days_moving_avg = 20
 start = datetime(2016, 10, 1)
 end = datetime(2017, 3, 1)
 capital_limit = 1000
+hedge_method = 'Rolling'
 # need to dynamically calculate hedge ratio based on historical data
 # hedge_ratio = 0.67153805 # ratio of stock2 to stock1
 
@@ -44,13 +45,15 @@ capital_limit = 1000
 # 			df = calculateSpread(df, tickers[i], tickers[j], days_moving_avg, hedge_ratio)
 # 			getStatistics(df)
 
-def statisticalArb(cash, stock1, stock2, start, end, days_moving_avg):
+def statisticalArb(cash, stock1, stock2, start, end, days_moving_avg, hedge_method):
 	df = getStocks(stock1, stock2, start, end, days_moving_avg)
-	hedge_ratio = calculateHedgeRatio(df, days_moving_avg)
-	print "Hedge Ratio Used: " + str(hedge_ratio)
-	df = calculateSpread(df, stock1, stock2, days_moving_avg, hedge_ratio)
-	getStatistics(df)
+	df = calculateHedgeRatio(df, days_moving_avg, hedge_method)
+	# print "Hedge Ratio Used: " + str(hedge_ratio)
+	df = calculateSpread(df, stock1, stock2, days_moving_avg)
+	getStatistics(df, hedge_method)
 	# # print df
+	Strategy = arbstrategy.ArbStrategy(capital_limit, df, stock1, stock2, days_moving_avg)
+	Strategy.run()
 	graph(df)
 
 # retrieving and sanitizing data
@@ -69,6 +72,39 @@ def getStocks(stock1, stock2, start, end, days_moving_avg):
 # spread - p1 = -b * p2 + b1
 # run augmented Dickey-Fuller (ADF) test to see if spreads are stationary
 def calculateHedgeRatio(df, days_moving_avg, method):
+	if method == 'Static': # initial (but flawed) method of keeping hedge ratio the same (uses future data)
+		return staticHedge(df, days_moving_avg)
+	elif method == 'Rolling': # calculates hedge ratio using a rolling method based on days_moving_avg
+		return rollingHedge(df, days_moving_avg)
+	elif method == 'Kalman':
+		return kalmanHedge(df, days_moving_avg)
+	else:
+		raise Exception('Unknown hedge ratio calculation method thrown!')
+
+	# y = np.asarray(df[stock1].tolist()[-days_moving_avg:]) # stock 1 data
+	# x = np.asarray(df[stock2].tolist()[-days_moving_avg:]) # stock 2 data
+	# # Fit the data using scipy.odr
+	# def f(B, x):
+	# 	return B[0] * x + B[1]
+	# linear = odr.Model(f)
+	# mydata = odr.RealData(x, y, sx=np.std(y), sy=np.std(x))
+	# myodr = odr.ODR(mydata, linear, beta0=[2, 0])
+	# myoutput = myodr.run()
+	# # fit the data using numpy.polyfit
+	# fit_np = np.polyfit(x, y, 1)
+	# # graph to compare the fit
+	# print 'polyfit beta', fit_np[0]
+	# print 'least errors beta', myoutput.beta[0]
+	# plt.plot(x, y, label='Actual Data', linestyle='dotted') # actual data points
+	# plt.plot(x, np.polyval(fit_np, x), "r--", lw = 2, label='Polyfit') # polyfit regression line
+	# plt.plot(x, f(myoutput.beta, x), "g--", lw = 2, label='Least Errors') # least errors regression line
+	# plt.legend(loc='lower right')
+	# plt.show()
+	# # myoutput.pprint()
+	# # df["HedgeRatio"] = calculateHedgeRatio(df[])
+	# return myoutput.beta[0] # returns the hedge ratio
+
+def leastErrorsHedgeRatio(df, days_moving_avg):
 	y = np.asarray(df[stock1].tolist()[-days_moving_avg:]) # stock 1 data
 	x = np.asarray(df[stock2].tolist()[-days_moving_avg:]) # stock 2 data
 	# Fit the data using scipy.odr
@@ -78,26 +114,27 @@ def calculateHedgeRatio(df, days_moving_avg, method):
 	mydata = odr.RealData(x, y, sx=np.std(y), sy=np.std(x))
 	myodr = odr.ODR(mydata, linear, beta0=[2, 0])
 	myoutput = myodr.run()
-	# fit the data using numpy.polyfit
-	fit_np = np.polyfit(x, y, 1)
-	# graph to compare the fit
-	print 'polyfit beta', fit_np[0]
-	print 'least errors beta', myoutput.beta[0]
-	plt.plot(x, y, label='Actual Data', linestyle='dotted') # actual data points
-	plt.plot(x, np.polyval(fit_np, x), "r--", lw = 2, label='Polyfit') # polyfit regression line
-	plt.plot(x, f(myoutput.beta, x), "g--", lw = 2, label='Least Errors') # least errors regression line
-	plt.legend(loc='lower right')
-	plt.show()
-	# myoutput.pprint()
-	# df["HedgeRatio"] = calculateHedgeRatio(df[])
-	return myoutput.beta[0] # returns the hedge ratio
+	return myoutput.beta[0]
 
-def calculateSpread(df, stock1, stock2, days_moving_avg, hedge_ratio):
-	df['Spread'] = df[stock1] - df[stock2] * hedge_ratio
+def staticHedge(df, days_moving_avg):
+	hedge_ratio = leastErrorsHedgeRatio(df, days_moving_avg)
+	df['HedgeRatio'] = hedge_ratio
+	return df
+
+def rollingHedge(df, days_moving_avg):
+	df['HedgeRatio'] = np.nan
+	# calculate the hedge ratios in a rolling manner
+	for i in range(days_moving_avg - 1, len(df['HedgeRatio'])):
+		df['HedgeRatio'][i] = leastErrorsHedgeRatio(df[:i + 1], days_moving_avg)
+	return df # last one should be  0.117262 !!!!!!
+
+def calculateSpread(df, stock1, stock2, days_moving_avg):
+	df['Spread'] = df[stock1] - df[stock2] * df['HedgeRatio']
 	df['MovingAvg'] = df['Spread'].rolling(window=days_moving_avg).mean()
 	df['Stdev'] = df['Spread'].rolling(window=days_moving_avg).std()
 	df['UpperTrigger'] = df['MovingAvg'] + 2 * df['Stdev']
 	df['LowerTrigger'] = df['MovingAvg'] - 2 * df['Stdev']
+	print df
 	return df
 
 # now want to find the spread and the past 60 day standard deviation for spreads
@@ -106,18 +143,21 @@ def graph(df):
 	df['MovingAvg'].plot(label='MovingAvg', color='b')
 	df['UpperTrigger'].plot(label='UpperTrigger', color='r', linestyle='dashed')
 	df['LowerTrigger'].plot(label='LowerTrigger', color='r', linestyle='dashed')
-	plt.legend(loc='lower right')
+	plt.legend(loc='upper left')
 	plt.show()
 
 # prints correlations, cointegrations test results, etc.
-def getStatistics(df):
+def getStatistics(df, hedge_method):
 	print 'Correlation Table\n', df[[stock1,stock2]].corr()
 	coint_tstat, coint_pvalue, _ = tsa.coint(df[stock1], df[stock2])
 	print 'Cointegration P-value', coint_pvalue
-	cadf_pvalue = tsa.adfuller(df["Spread"])[1]
+	if hedge_method == 'Static':
+		cadf_pvalue = tsa.adfuller(df["Spread"])[1]
+	else:
+		cadf_pvalue = tsa.adfuller(df["Spread"][days_moving_avg - 1:])[1]
 	print 'Augmented Dickey-Fuller P-value', cadf_pvalue
 
-statisticalArb(capital_limit, stock1, stock2, start, end, days_moving_avg)
+statisticalArb(capital_limit, stock1, stock2, start, end, days_moving_avg, hedge_method)
 
 # HOW TO READ THE CHART:
 # when spread crosses higher trigger level, sell stock1 and buy stock2.

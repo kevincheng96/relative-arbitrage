@@ -1,3 +1,5 @@
+import numpy as np
+
 # calculates the total profit earned from this strategy
 
 class ArbStrategy:
@@ -18,11 +20,11 @@ class ArbStrategy:
 		self.y = stock2
 		self.days_moving_avg = days_moving_avg
 
-	def run():
+	def run(self):
 		'''
 		Runs the arbitrage strategy.
 		'''
-		df_trimmed = self.df[days_moving_avg - 1:] # start from the first day that a moving avg can be calculated
+		df_trimmed = self.df[self.days_moving_avg - 1:] # start from the first day that a moving avg can be calculated
 		x_price = df_trimmed[self.x] # an array of daily prices for stock x
 		y_price = df_trimmed[self.y] # an array of daily prices for stock y
 		spread = df_trimmed['Spread']
@@ -41,18 +43,23 @@ class ArbStrategy:
 		##### Need to recalculate all spreads based on this hedge ratio. Once position is closed,
 		##### calculate the spreads again with a new hedge ratio.   
 		for i in range(len(x_price)):
+			if spread[i] == np.nan: # pass if no data is available
+				pass
 			if triggered_upper:
 				if spread[i] <= moving_avg[i]:
 					# get rid of positions (short x, long y) by buying x and selling y
 					profit += x_shares * x_price[i] + y_shares * y_price[i] 
+					print x_shares, x_price[i], y_shares, y_price[i]
 					x_shares = y_shares = 0
 					triggered_upper = False
+					trades.append((df_trimmed.index[i], "SOLD UPPER"))
 			elif triggered_lower:
 				if spread[i] >= moving_avg[i]: 
 					# get rid of positions (long x, short y) by selling x and buying y
 					profit += x_shares * x_price[i] + y_shares * y_price[i]
 					x_shares = y_shares = 0
 					triggered_lower = False
+					trades.append((df_trimmed.index[i], "SOLD LOWER"))
 			else:
 				if spread[i] >= upper_trigger[i]:
 					# short stock x, buy stock y
@@ -61,6 +68,9 @@ class ArbStrategy:
 					y_buy_price = y_price[i]
 					x_shares = -self.capital_limit/(x_price[i] + hedge_ratio[i] * y_price[i]) # amount of stock x to short
 					y_shares = -x_shares * hedge_ratio[i] # amount of stock y to buy
+					print 'hedge ratio', hedge_ratio[i] # NEGATIVE HEDGE RATIO???
+					print 'net position', x_shares*x_price[i] + y_shares*y_price[i] # need net position to be 0
+					trades.append((df_trimmed.index[i], "UPPER TRIGGER"))
 				elif spread[i] <= lower_trigger[i]:
 					# buy stock x, short stock y
 					triggered_lower = True
@@ -68,7 +78,10 @@ class ArbStrategy:
 					y_buy_price = -y_price[i]
 					x_shares = self.capital_limit/(x_price[i] + hedge_ratio[i] * y_price[i]) # amount of stock x to buy
 					y_shares = -x_shares * hedge_ratio[i] # amount of stock y to short
+					trades.append((df_trimmed.index[i], "LOWER TRIGGER"))
 				else:
 					pass # do nothing if no levels are triggered
-		return "Total profit is", profit
+		print "Total profit is", profit
+		print trades
+		return profit
 
