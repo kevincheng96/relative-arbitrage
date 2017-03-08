@@ -1,5 +1,8 @@
 # Beta-neutral Statistical Arbitrage / Pair Trading
-# Calculating spread using Moving Average and Rolling Standard Deviation
+# Calculating Bollinger Bands using Moving Average and Rolling Standard Deviation
+# Calculating residual using regression: residual = priceA - (m*priceB + b)
+# Using Adjusted Closing Prices
+# Not dollar neutral, but is market neutral
 
 import pandas as pd
 from pandas import DataFrame
@@ -14,27 +17,33 @@ from pandas.stats.api import ols
 import arbstrategy # importing the arbitrage strategy I wrote in another file
 
 # Good stock pairs (ranked):
+# BP and SLB
+# SLB and SNP, SLB and CEO, TOT and SNP, SLB and ENB
 # HD and LOW
+# GM and BWA 
 # AREX and WLL
+# AMX and ORAN
+# AMX and NEE
 # MCD and SBUX
 
-stock1 = 'AMX'
-stock2 = 'NEE'
+stock1 = 'BP'
+stock2 = 'SLB'
 days_moving_avg = 60
-start = datetime(2016, 4, 1)
+start = datetime(2015, 4, 1)
 end = datetime(2017, 6, 1)
 capital_limit = 1000
 hedge_method = 'Rolling'
-tickers = ['CHL','VZ','T','VOD','NTT','AMX','CHA','BT','CHU','ORAN','BCE','S','NEE','SKM']
+tickers = ['XOM','RDS-A','CVX','PTR','TOT','BP','SLB','SNP','ENB','PBR','COP','EOG','STO','E','SU','CEO','OXY','KMI','HAL','PSX','APC','WMB']
 # use polyfit or total least squares?
 
 ############
 ## To Do: ##
 ############
 # Calculate hedge-ratio for each day (ratio dynamically changes) (use both Kalman Filter and rolling)
-# Recalculate spread based on current hedge-ratio? ***
-# Implement findCointegratedStocks()
+# Recalculate residual based on current hedge-ratio? ***
+# Try with log(prices)
 # Find endpoints for cryptocurrency historical data
+# Other strategies: minimum squared distance and stochastic spread. Using cointegration method right now
 
 
 # given a list of stocks, find the cointegrated pairs
@@ -47,9 +56,9 @@ def findCointegratedPairs(tickers, start, end, days_moving_avg):
 			stock2 = tickers[j]
 			df = getStocks(stock1, stock2, start, end, days_moving_avg)
 			df = calculateHedgeRatio(df, stock1, stock2, days_moving_avg, 'Rolling')
-			df = calculateSpread(df, stock1, stock2, days_moving_avg)
+			df = calculateResidual(df, stock1, stock2, days_moving_avg)
 			coint_pvalue = round(tsa.coint(df[stock1], df[stock2])[1], 5)
-			cadf_pvalue = round(tsa.adfuller(df["Spread"][days_moving_avg - 1:])[1], 5)
+			cadf_pvalue = round(tsa.adfuller(df['Residual'][days_moving_avg - 1:])[1], 5)
 			if coint_pvalue <= 0.05 and cadf_pvalue <= 0.05:
 				cointegrated_pairs.append((stock1, stock2, coint_pvalue, cadf_pvalue))
 	print cointegrated_pairs
@@ -57,9 +66,15 @@ def findCointegratedPairs(tickers, start, end, days_moving_avg):
 
 def statisticalArb(cash, stock1, stock2, start, end, days_moving_avg, hedge_method):
 	df = getStocks(stock1, stock2, start, end, days_moving_avg)
+	# first graph the stocks
+	df[stock1].plot(label=stock1, color='b')
+	df[stock2].plot(label=stock2, color='g')
+	plt.legend(loc='upper left')
+	plt.show()
+	# calculate hedge ratio
 	df = calculateHedgeRatio(df, stock1, stock2, days_moving_avg, hedge_method)
 	# print "Hedge Ratio Used: " + str(hedge_ratio)
-	df = calculateSpread(df, stock1, stock2, days_moving_avg)
+	df = calculateResidual(df, stock1, stock2, days_moving_avg)
 	getStatistics(df, hedge_method)
 	Strategy = arbstrategy.ArbStrategy(capital_limit, df, stock1, stock2, days_moving_avg)
 	Strategy.run()
@@ -79,12 +94,11 @@ def getStocks(stock1, stock2, start, end, days_moving_avg):
 	s2 = s2.drop(['High','Low','Open','Volume','Adj Close'], axis=1)
 	s2.columns = [stock2] # closing price of AMD
 	df = pd.concat([s1, s2], axis=1) # concatenates the dataframes
-	return df # returns a single dataframe containing the closing prices, moving avg, spread, and lower and upper stdev of stocks
+	return df # returns a single dataframe containing the closing prices, moving avg, residuals, and lower and upper stdev of stocks
 
 # running Total Least Errors regression to find hedge ratio (using days_moving_avg as the # of historical days to use)
-# spread = p1 - b0 * p2 + b1(where p1=price of stock 1, p2=price of stock 2, b=hedge ratio, b1=constant)
-# spread - p1 = -b * p2 + b1
-# run augmented Dickey-Fuller (ADF) test to see if spreads are stationary
+# residual = p1 - (b0 * p2 + b1) (where p1=price of stock 1, p2=price of stock 2, b=hedge ratio, b1=constant)
+# run augmented Dickey-Fuller (ADF) test to see if residuals are stationary
 def calculateHedgeRatio(df, stock1, stock2, days_moving_avg, method):
 	if method == 'Static': # initial (but flawed) method of keeping hedge ratio the same (uses future data)
 		return staticHedge(df, stock1, stock2, days_moving_avg)
@@ -138,7 +152,7 @@ def leastErrorsHedgeRatio(df, stock1, stock2, days_moving_avg):
 	mydata = odr.RealData(x, y, sx=np.std(x), sy=np.std(y))
 	myodr = odr.ODR(mydata, linear, beta0=[fit_np[0], fit_np[1]])
 	myoutput = myodr.run()
-	return myoutput.beta[0]
+	return (myoutput.beta[0], myoutput.beta[1]) # return both slope and intercept
 
 def hedge(df, days_moving_avg): # USED DEBUGGING
 	y = np.asarray(df[stock1].tolist()[-days_moving_avg:]) # stock 1 data
@@ -172,23 +186,26 @@ def staticHedge(df, days_moving_avg):
 
 def rollingHedge(df, stock1, stock2, days_moving_avg):
 	df['HedgeRatio'] = np.nan
+	df['Intercept'] = np.nan
 	# calculate the hedge ratios in a rolling manner
 	for i in range(days_moving_avg - 1, len(df['HedgeRatio'])):
-		df['HedgeRatio'][i] = leastErrorsHedgeRatio(df[:i], stock1, stock2, days_moving_avg)
+		betas = leastErrorsHedgeRatio(df[:i], stock1, stock2, days_moving_avg)
+		df['HedgeRatio'][i] = betas[0]
+		df['Intercept'][i] = betas[1]
 	return df # last one should be  0.117262 !!!!!!
 
-def calculateSpread(df, stock1, stock2, days_moving_avg):
-	df['Spread'] = df[stock1] - df[stock2] * df['HedgeRatio']
-	df['MovingAvg'] = df['Spread'].rolling(window=days_moving_avg).mean()
-	df['Stdev'] = df['Spread'].rolling(window=days_moving_avg).std()
+def calculateResidual(df, stock1, stock2, days_moving_avg):
+	df['Residual'] = df[stock1] - df[stock2] * df['HedgeRatio'] - df['Intercept']
+	df['MovingAvg'] = df['Residual'].rolling(window=days_moving_avg).mean()
+	df['Stdev'] = df['Residual'].rolling(window=days_moving_avg).std()
 	df['UpperTrigger'] = df['MovingAvg'] + 2 * df['Stdev']
 	df['LowerTrigger'] = df['MovingAvg'] - 2 * df['Stdev']
 	print df
 	return df
 
-# now want to find the spread and the past 60 day standard deviation for spreads
+# now want to find the residual and the past 60 day standard deviation for residuals
 def graph(df):
-	df['Spread'].plot(label='Spread', color='g')
+	df['Residual'].plot(label='Residual', color='g')
 	df['MovingAvg'].plot(label='MovingAvg', color='b')
 	df['UpperTrigger'].plot(label='UpperTrigger', color='r', linestyle='dashed')
 	df['LowerTrigger'].plot(label='LowerTrigger', color='r', linestyle='dashed')
@@ -202,17 +219,40 @@ def getStatistics(df, hedge_method):
 	print 'Cointegration P-value', coint_pvalue
 	# NEED TO RUN adfuller ON RESIDUALS OF LINEAR REGRESSION 
 	if hedge_method == 'Static':
-		cadf_pvalue = tsa.adfuller(df["Spread"])[1]
+		cadf_pvalue = tsa.adfuller(df['Residual'])[1]
 	else:
-		cadf_pvalue = tsa.adfuller(df["Spread"][days_moving_avg - 1:])[1]
+		cadf_pvalue = tsa.adfuller(df['Residual'][days_moving_avg - 1:])[1]
 	print 'Augmented Dickey-Fuller P-value', cadf_pvalue
 
 statisticalArb(capital_limit, stock1, stock2, start, end, days_moving_avg, hedge_method)
 # findCointegratedPairs(tickers, start, end, days_moving_avg)
 
-### Cointegrated Pairs ###
+### Cointegrated Pairs ### (using 4/1/2015 - 3/7/2017, 60 day moving avg)
 # Telecommunications
-# [('AMX', 'ORAN', 0.03343, 0.00443), ('AMX', 'BCE', 0.00847, 0.00061), ('AMX', 'NEE', 0.04631, 0.00929)]
+# ['CHL','VZ','T','VOD','NTT','AMX','CHA','BT','CHU','ORAN','BCE','S','NEE','SKM']
+# Pairs:
+# [('AMX', 'ORAN', 0.03343, 0.00443), ('AMX', 'BCE', 0.00847, 0.00061), ('AMX', 'NEE', 0.04631, 0.00929)] (NEED TO RE RUN)
+
+# Utilities
+# ['DUK','NGG','NEE','D','SO','EXC','KEP','AEP','SRE','PCG','HNP','PPL','PEG','EIX','ETP','ED','XEL','ES','FE']
+# Pairs:
+# [('HNP', 'PPL', 0.01447, 0.00548), ('HNP', 'ES', 0.01398, 0.0)] (NEED TO RE RUN)
+
+# Energy
+# ['XOM','RDS-A','CVX','PTR','TOT','BP','SLB','SNP','ENB','PBR','COP','EOG','STO','E','SU','CEO','OXY','KMI','HAL','PSX','APC','WMB']
+# Pairs:
+# [('TOT', 'SNP', 0.03484, 0.00072), ('BP', 'SLB', 0.01587, 0.00051), ('SLB', 'SNP', 0.00442, 0.0011), ('SLB', 'ENB', 0.01062, 7e-05), ('SLB', 'CEO', 0.04653, 0.00123), ('SU', 'HAL', 0.02937, 0.00015)]
+
+# Automotives
+# ['TM','GM','HMC','F','TSLA','NSANY','JCI','CMI','TTM','DLPH','MGA','FCAU','GPC','HOG','LEA','LKQ','ALV','GT','BWA','HAR','WBC','NAV']
+# Pairs:
+# [('GM', 'BWA', 0.02124, 1e-05), ('GM', 'HAR', 0.01433, 0.01116), ('DLPH', 'WBC', 0.04062, 0.00152), ('LEA', 'BWA', 0.00287, 0.00386)]
+
+# Financials
+
+# Transportation
+
+# Industrials
 
 # HOW TO READ THE CHART:
 # when spread crosses higher trigger level, sell stock1 and buy stock2.
@@ -229,5 +269,7 @@ statisticalArb(capital_limit, stock1, stock2, start, end, days_moving_avg, hedge
 # CADF Cointegrated Testing: https://www.quantstart.com/articles/Basics-of-Statistical-Mean-Reversion-Testing-Part-II
 # Dynamic Hedge Ratios: https://www.quantstart.com/articles/Dynamic-Hedge-Ratio-Between-ETF-Pairs-Using-the-Kalman-Filter
 # Finding cointegrated pairs: https://www.quantopian.com/posts/how-to-build-a-pairs-trading-strategy-on-quantopian
+# Great source on cointegration method other methods: http://ro.uow.edu.au/cgi/viewcontent.cgi?article=4452&context=theses
 
 # Possible Useful Sources:
+# *** Minimum Squared Distance and Cointegration Method Explanation: http://www.forexfactory.com/attachment.php/271490?attachmentid=271490&d=1247265612
