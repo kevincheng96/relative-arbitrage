@@ -36,6 +36,8 @@ class ArbStrategy:
 		triggered_lower = False # whether or not a lower signal has been triggered
 		x_shares = 0 # number of shares of stock x currently held
 		y_shares = 0 # number of shares of stock y currently held
+		x_buyprice = 0 # price at which x was bought
+		y_buyprice = 0 # price at which y was bought
 		trades = [] # a list containing the history of trades
 		profit = 0 # total profit from transactions
 
@@ -48,36 +50,50 @@ class ArbStrategy:
 			if triggered_upper:
 				if spread[i] <= moving_avg[i]:
 					# get rid of positions (short x, long y) by buying x and selling y
-					profit += x_shares * x_price[i] + y_shares * y_price[i] 
+					profit += x_shares * (x_price[i] - x_buyprice) + y_shares * (y_price[i] - y_buyprice) 
 					print x_shares, x_price[i], y_shares, y_price[i]
 					x_shares = y_shares = 0
+					x_buyprice = y_buyprice = 0
 					triggered_upper = False
 					trades.append((df_trimmed.index[i], "SOLD UPPER"))
 			elif triggered_lower:
 				if spread[i] >= moving_avg[i]: 
 					# get rid of positions (long x, short y) by selling x and buying y
-					profit += x_shares * x_price[i] + y_shares * y_price[i]
+					profit += x_shares * (x_price[i] - x_buyprice) + y_shares * (y_price[i] - y_buyprice) 
+					print 'x profit', x_shares * (x_price[i] - x_buyprice)
+					print 'y profit', y_shares * (y_price[i] - y_buyprice)
 					x_shares = y_shares = 0
+					x_buyprice = y_buyprice = 0
 					triggered_lower = False
 					trades.append((df_trimmed.index[i], "SOLD LOWER"))
 			else:
+				if hedge_ratio[i] <= 0: # ignore if they are negatively correlated (too risky)
+					continue
 				if spread[i] >= upper_trigger[i]:
 					# short stock x, buy stock y
 					triggered_upper = True
-					x_buy_price = -x_price[i]
-					y_buy_price = y_price[i]
-					x_shares = -self.capital_limit/(x_price[i] + hedge_ratio[i] * y_price[i]) # amount of stock x to short
-					y_shares = -x_shares * hedge_ratio[i] # amount of stock y to buy
-					print 'hedge ratio', hedge_ratio[i] # NEGATIVE HEDGE RATIO???
-					print 'net position', x_shares*x_price[i] + y_shares*y_price[i] # need net position to be 0
+					x_buyprice = x_price[i]
+					y_buyprice = y_price[i]
+					x_shares = -1 * self.capital_limit/(x_price[i] + hedge_ratio[i] * y_price[i]) # amount of stock x to short (negative)
+					y_shares = (-1 * x_shares) * hedge_ratio[i] # amount of stock y to buy
+					# spread = x_price - hedge_ratio[i] * y_price # recalculate the spreads using the current hedge ratio
+					print 'hedge ratio', hedge_ratio[i] 
+					print 'x shares', x_shares
+					print 'y shares', y_shares
+					print 'net exposure', x_shares*x_price[i] + y_shares*y_price[i] # need net position to be 0
 					trades.append((df_trimmed.index[i], "UPPER TRIGGER"))
 				elif spread[i] <= lower_trigger[i]:
 					# buy stock x, short stock y
 					triggered_lower = True
-					x_buy_price = x_price[i]
-					y_buy_price = -y_price[i]
+					x_buyprice = x_price[i]
+					y_buyprice = y_price[i] 
 					x_shares = self.capital_limit/(x_price[i] + hedge_ratio[i] * y_price[i]) # amount of stock x to buy
-					y_shares = -x_shares * hedge_ratio[i] # amount of stock y to short
+					y_shares = (-1 * x_shares) * hedge_ratio[i] # amount of stock y to short (negative)
+					# spread = x_price - hedge_ratio[i] * y_price # recalculate the spreads using the current hedge ratio
+					print 'hedge ratio', hedge_ratio[i] 
+					print 'x shares', x_shares
+					print 'y shares', y_shares
+					print 'net exposure', x_shares*x_price[i] + y_shares*y_price[i]
 					trades.append((df_trimmed.index[i], "LOWER TRIGGER"))
 				else:
 					pass # do nothing if no levels are triggered
