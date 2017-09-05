@@ -1,6 +1,6 @@
 # Beta-neutral Statistical Arbitrage / Pair Trading
 # Calculating Bollinger Bands using Moving Average and Rolling Standard Deviation
-# Calculating residual using regression: residual = priceA - (m*priceB + b)
+# Calculating residual using regression: residual = priceA - (m*priceB + b)  ~ m is hedge ratio, b is mean price of spread
 # Using Adjusted Closing Prices
 # Not dollar neutral, but is market neutral
 
@@ -12,37 +12,45 @@ import scipy.odr as odr
 import pandas_datareader.data as web
 import statsmodels
 import statsmodels.tsa.stattools as tsa # test for cointegration between stocks (do the)
-import matplotlib.pyplot as plt # matplotlib is version 1.3.1, need to update to 1.4 or higher...
+import matplotlib.pyplot as plt 
 from pandas.stats.api import ols
-import arbstrategy # importing the arbitrage strategy I wrote in another file
+import backtester # importing the backtester I wrote in another file
 
 # Good stock pairs (ranked):
-# BP and SLB
-# SLB and SNP, SLB and CEO, TOT and SNP, SLB and ENB
+# TOT and SNP
+# BP and SLB, SLB and SNP, SLB and CEO, SLB and ENB (SLB has diverged)
+# CAT and CMI
 # HD and LOW
 # GM and BWA 
 # AREX and WLL
 # AMX and ORAN
 # AMX and NEE
 # MCD and SBUX
+# [('D', 'PCG', 0.00196, 0.00147), ('D', 'EIX', 0.00169, 0.0), ('D', 'XEL', 0.03207, 0.00116)]
 
-stock1 = 'BP'
-stock2 = 'SLB'
+stock1 = 'D'
+stock2 = 'EIX'
 days_moving_avg = 60
 start = datetime(2015, 4, 1)
-end = datetime(2017, 6, 1)
+end = datetime(2017, 9, 1)
 capital_limit = 1000
+# 'Static' or 'Rolling'
 hedge_method = 'Rolling'
-tickers = ['XOM','RDS-A','CVX','PTR','TOT','BP','SLB','SNP','ENB','PBR','COP','EOG','STO','E','SU','CEO','OXY','KMI','HAL','PSX','APC','WMB']
+tickers = ['DUK','NEE','D','EXC','KEP','AEP','SRE','PCG','HNP','PPL','PEG','EIX','ETP','ED','XEL','ES','FE']
 # use polyfit or total least squares?
 
 ############
 ## To Do: ##
 ############
 # Calculate hedge-ratio for each day (ratio dynamically changes) (use both Kalman Filter and rolling)
-# Recalculate residual based on current hedge-ratio? ***
+# Pickle the data so it does not have to make an API call every single time it's run
 # Try with log(prices)
+# Try with adjusted prices (difficulties with getting adjusted price in real time though)
+# PCA (Principal Component Analysis)
+# Perform more rigorous testing of cointegration, including using Johansen's testing approach based on a Vector Error Correction Model (VECM) and comparing the outcome to the Engle-Granger results
 # Find endpoints for cryptocurrency historical data
+# Factor in transaction costs (buying at bid and selling at ask pice) (margin rate)
+# FOCUS on small stocks with less media/analyst coverage (trading on the difference of information diffusion)
 # Other strategies: minimum squared distance and stochastic spread. Using cointegration method right now
 
 
@@ -70,28 +78,30 @@ def statisticalArb(cash, stock1, stock2, start, end, days_moving_avg, hedge_meth
 	df[stock1].plot(label=stock1, color='b')
 	df[stock2].plot(label=stock2, color='g')
 	plt.legend(loc='upper left')
+	plt.title('Stock Prices')
 	plt.show()
 	# calculate hedge ratio
 	df = calculateHedgeRatio(df, stock1, stock2, days_moving_avg, hedge_method)
 	# print "Hedge Ratio Used: " + str(hedge_ratio)
 	df = calculateResidual(df, stock1, stock2, days_moving_avg)
 	getStatistics(df, hedge_method)
-	Strategy = arbstrategy.ArbStrategy(capital_limit, df, stock1, stock2, days_moving_avg)
-	Strategy.run()
 	graph(df)
+	Backtester = backtester.Backtester(capital_limit, df, stock1, stock2, days_moving_avg)
+	Backtester.run()
 	# print df['HedgeRatio'].tolist()
 	# print df['2016-09-01':'2016-11-01']
-	staticHedge(df[:'2016-09-19 00:00:00'], days_moving_avg) # DEBUGGING
-	plt.plot(df.index, df['HedgeRatio'], label='Hedge Ratio') 
+	# staticHedge(df[:'2016-09-19 00:00:00'], days_moving_avg) # DEBUGGING
+	# plt.plot(df.index, df['HedgeRatio'], label='Hedge Ratio') 
+	# plt.title('Static Hedge Ratio Over Time (DEBUGGING)')
 	plt.show()
 
 # retrieving and sanitizing data
 def getStocks(stock1, stock2, start, end, days_moving_avg):
-	s1 = web.DataReader(stock1, 'yahoo', start, end)
-	s2 = web.DataReader(stock2, 'yahoo', start, end)	
-	s1 = s1.drop(['High','Low','Open','Volume','Adj Close'], axis=1) # drop unnecessary columns
+	s1 = web.DataReader(stock1, 'google', start, end)
+	s2 = web.DataReader(stock2, 'google', start, end)	
+	s1 = s1.drop(['High','Low','Open','Volume'], axis=1) # drop unnecessary columns
 	s1.columns = [stock1] # closing price of NVDA
-	s2 = s2.drop(['High','Low','Open','Volume','Adj Close'], axis=1)
+	s2 = s2.drop(['High','Low','Open','Volume'], axis=1)
 	s2.columns = [stock2] # closing price of AMD
 	df = pd.concat([s1, s2], axis=1) # concatenates the dataframes
 	return df # returns a single dataframe containing the closing prices, moving avg, residuals, and lower and upper stdev of stocks
@@ -101,7 +111,7 @@ def getStocks(stock1, stock2, start, end, days_moving_avg):
 # run augmented Dickey-Fuller (ADF) test to see if residuals are stationary
 def calculateHedgeRatio(df, stock1, stock2, days_moving_avg, method):
 	if method == 'Static': # initial (but flawed) method of keeping hedge ratio the same (uses future data)
-		return staticHedge(df, stock1, stock2, days_moving_avg)
+		return staticHedge(df, days_moving_avg)
 	elif method == 'Rolling': # calculates hedge ratio using a rolling method based on days_moving_avg
 		return rollingHedge(df, stock1, stock2, days_moving_avg)
 	elif method == 'Kalman':
@@ -174,6 +184,7 @@ def hedge(df, days_moving_avg): # USED DEBUGGING
 	plt.plot(x, np.polyval(fit_np, x), "r--", lw = 2, label='Polyfit') # polyfit regression line
 	plt.plot(x, f(myoutput.beta, x), "g--", lw = 2, label='Least Errors') # least errors regression line
 	plt.legend(loc='lower right')
+	plt.title('Linear Fit Through Historical Data')
 	plt.show()
 	# myoutput.pprint()
 	# df["HedgeRatio"] = calculateHedgeRatio(df[])
@@ -182,6 +193,7 @@ def hedge(df, days_moving_avg): # USED DEBUGGING
 def staticHedge(df, days_moving_avg):
 	hedge_ratio = hedge(df, days_moving_avg)
 	df['HedgeRatio'] = hedge_ratio
+	df['Intercept'] = 0
 	return df
 
 def rollingHedge(df, stock1, stock2, days_moving_avg):
@@ -209,6 +221,9 @@ def graph(df):
 	df['MovingAvg'].plot(label='MovingAvg', color='b')
 	df['UpperTrigger'].plot(label='UpperTrigger', color='r', linestyle='dashed')
 	df['LowerTrigger'].plot(label='LowerTrigger', color='r', linestyle='dashed')
+	plt.title('Beta-Neutral Statistical Arbitrage')
+	plt.ylabel('Spread')
+	plt.xlabel('Date')
 	plt.legend(loc='upper left')
 	plt.show()
 
@@ -231,10 +246,10 @@ statisticalArb(capital_limit, stock1, stock2, start, end, days_moving_avg, hedge
 # Telecommunications
 # ['CHL','VZ','T','VOD','NTT','AMX','CHA','BT','CHU','ORAN','BCE','S','NEE','SKM']
 # Pairs:
-# [('AMX', 'ORAN', 0.03343, 0.00443), ('AMX', 'BCE', 0.00847, 0.00061), ('AMX', 'NEE', 0.04631, 0.00929)] (NEED TO RE RUN)
+# [('D', 'PCG', 0.00196, 0.00147), ('D', 'EIX', 0.00169, 0.0), ('D', 'XEL', 0.03207, 0.00116)]
 
 # Utilities
-# ['DUK','NGG','NEE','D','SO','EXC','KEP','AEP','SRE','PCG','HNP','PPL','PEG','EIX','ETP','ED','XEL','ES','FE']
+# ['DUK','NEE','D','EXC','KEP','AEP','SRE','PCG','HNP','PPL','PEG','EIX','ETP','ED','XEL','ES','FE']
 # Pairs:
 # [('HNP', 'PPL', 0.01447, 0.00548), ('HNP', 'ES', 0.01398, 0.0)] (NEED TO RE RUN)
 
@@ -273,3 +288,16 @@ statisticalArb(capital_limit, stock1, stock2, start, end, days_moving_avg, hedge
 
 # Possible Useful Sources:
 # *** Minimum Squared Distance and Cointegration Method Explanation: http://www.forexfactory.com/attachment.php/271490?attachmentid=271490&d=1247265612
+
+# file:///Users/Kevincheng96/Downloads/SSRN-id2196391.pdf
+# Two limitations:
+# poor estimates of the cointegrating vector; and inaccurate prediction of
+# the expected spread that can generate false trading signals
+
+# file:///Users/Kevincheng96/Downloads/SSRN-id1361293.pdf
+# We document several pieces of evidence that are consistent with the delay in information diffusion as the driver of 2
+# our pairs trading strategy. The information delay explanation posits that when a firm and its peer
+# deviate in stock prices, there is likely news related to the fundamentals of the pair; however, it takes
+# time for the news to disseminate to the pair and this creates trading opportunity. This explanation is
+# a natural candidate for explain the pairs trading profits and is one of the favored explanations in
+# Engelberge, Gao, and Jagannathan (2009). 
